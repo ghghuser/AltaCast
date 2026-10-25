@@ -1,0 +1,37 @@
+name: Build AltaCast Standalone
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: microsoft/setup-msbuild@v2
+
+      - name: Build (Win32 Release)
+        working-directory: trunk/AltaCast/src
+        run: >
+          msbuild altacastStandalone.vcxproj
+          /p:Configuration=Release
+          /p:Platform=Win32
+          /p:PlatformToolset=v143
+          /p:WindowsTargetPlatformVersion=10.0
+          /m /v:minimal
+
+      - name: List outputs
+        if: always()
+        working-directory: trunk/AltaCast/src
+        run: Get-ChildItem -Recurse -Include *.exe,*.dll Release,bin -ErrorAction SilentlyContinue | Select-Object FullName
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: altacast-standalone
+          path: |
+            trunk/AltaCast/src/Release/*.exe
+            trunk/AltaCast/src/bin/**/*.exe
+          if-no-files-found: warn
