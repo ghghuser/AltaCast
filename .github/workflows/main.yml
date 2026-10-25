@@ -12,10 +12,53 @@ jobs:
 
       - uses: microsoft/setup-msbuild@v2
 
+      - name: Patch sources for modern toolchain
+        working-directory: trunk/AltaCast/src
+        shell: pwsh
+        run: |
+          $latin1 = [Text.Encoding]::GetEncoding(28591)
+          function Edit-File($path, $pattern, $replacement) {
+            $bytes = [IO.File]::ReadAllBytes($path)
+            $utf16 = ($bytes.Length -ge 2) -and ($bytes[0] -eq 0xFF) -and ($bytes[1] -eq 0xFE)
+            $enc = if ($utf16) { [Text.Encoding]::Unicode } else { $latin1 }
+            $text = $enc.GetString($bytes)
+            $new = [regex]::Replace($text, $pattern, $replacement)
+            if ($new -ne $text) {
+              [IO.File]::WriteAllBytes($path, $enc.GetBytes($new))
+              Write-Host "patched $path"
+            }
+          }
+
+          # 1. WINVER / _WIN32_WINNT を 0x0A00 に
+          foreach ($f in Get-ChildItem -File -Include *.h,*.vcxproj -Path .\*) {
+            Edit-File $f.FullName '(WINVER|_WIN32_WINNT)(=|\s+)0x0[0-5][0-9A-Fa-f]{2}' '${1}${2}0x0A00'
+          }
+
+          # 3. "Built on : "__DATE__ のスペース不足を直す
+          foreach ($f in Get-ChildItem -File -Include *.cpp -Path .\*) {
+            Edit-File $f.FullName '"(__DATE__|__TIME__)' '" ${1}'
+          }
+
+      - name: Japanese UI patch (fonts and charset)
+        working-directory: trunk/AltaCast/src
+        shell: pwsh
+        run: |
+          $latin1 = [Text.Encoding]::GetEncoding(28591)
+          $path = (Resolve-Path altacast.rc).Path
+          $bytes = [IO.File]::ReadAllBytes($path)
+          $utf16 = ($bytes.Length -ge 2) -and ($bytes[0] -eq 0xFF) -and ($bytes[1] -eq 0xFE)
+          $enc = if ($utf16) { [Text.Encoding]::Unicode } else { $latin1 }
+          $text = $enc.GetString($bytes)
+          $text = $text.Replace('"MS Sans Serif"', '"Meiryo"')
+          $text = [regex]::Replace($text, '(FONT\s+\d+\s*,\s*"[^"]*"\s*,\s*\d+\s*,\s*\d+\s*,\s*)0x1\b', '${1}0x80')
+          [IO.File]::WriteAllBytes($path, $enc.GetBytes($text))
+          Select-String -Path altacast.rc -Pattern '^\s*FONT\s' | Select-Object -First 20 | ForEach-Object { $_.Line }
+
       - name: Build (Win32 Release)
         working-directory: trunk/AltaCast/src
         env:
           CL: /DHAVE_STRUCT_TIMESPEC
+          LINK: /SAFESEH:NO
         run: >
           msbuild altacastStandalone.vcxproj
           /p:Configuration=Release
