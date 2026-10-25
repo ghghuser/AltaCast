@@ -14,6 +14,8 @@ jobs:
 
       - name: Build (Win32 Release)
         working-directory: trunk/AltaCast/src
+        env:
+          CL: /DHAVE_STRUCT_TIMESPEC
         run: >
           msbuild altacastStandalone.vcxproj
           /p:Configuration=Release
