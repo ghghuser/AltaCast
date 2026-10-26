@@ -120,7 +120,7 @@ def p_rc(t):
         '    RTEXT           "Charset",IDC_STATIC,43,%d,44,8\n'
         "    COMBOBOX        IDC_LADIOCHARSET,93,%d,70,60,"
         "CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP\n"
-        % (dj_y + 3, dj_y, cs_y + 3, cs_y + 1),
+        % (dj_y + 3, dj_y, cs_y + 3, cs_y),
         "after",
         "altacast.rc IDC_IRC",
     )
@@ -170,6 +170,15 @@ def p_yp_cpp(t):
         "\t\tm_LadioCharset = 0;\n"
         "\t}\n"
         "\tm_LadioCharsetCtrl.SetCurSel(m_LadioCharset);\n"
+        "\t// make the closed combo box as tall as the edit boxes (14 dialog units)\n"
+        "\t{\n"
+        "\t\tCRect rcEdit( 0, 0, 0, 14 );\n"
+        "\t\tMapDialogRect( &rcEdit );\n"
+        "\t\tint h = rcEdit.Height() - 2 * ::GetSystemMetrics( SM_CYEDGE );\n"
+        "\t\tif ( h > 0 ) {\n"
+        "\t\t\tm_LadioCharsetCtrl.SetItemHeight( -1, h );\n"
+        "\t\t}\n"
+        "\t}\n"
         "\tCWnd *pDJ = GetDlgItem(IDC_LADIODJ);\n"
         "\tif (pDJ) {\n"
         "\t\tpDJ->SendMessage(EM_LIMITTEXT, 250, 0);\n"
