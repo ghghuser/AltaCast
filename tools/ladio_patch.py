@@ -45,6 +45,13 @@ def edit(text, pattern, insert, where, label, flags=0):
     fail("bad mode " + where)
 
 
+def sub_once(text, pattern, repl, label, flags=0):
+    new, n = re.subn(pattern, repl, text, flags=flags)
+    if n != 1:
+        fail("%s: expected exactly 1 match, found %d" % (label, n))
+    return new
+
+
 def patch_file(name, func):
     path = SRC / name
     if not path.exists():
@@ -76,24 +83,44 @@ def p_resource_h(t):
 
 # ----------------------------------------------------------------- altacast.rc
 def p_rc(t):
-    # "DJ Name" and "Charset" go below IRC, one per row. The page is only 211 units
-    # high (the tab control ends right below it), so the group box grows by 3 units
-    # and the two new rows are packed tightly.
-    t = edit(
-        t,
-        r'GROUPBOX\s+"YP Settings",IDC_STATIC,7,7,314,197',
-        'GROUPBOX        "YP Settings",IDC_STATIC,7,7,314,200',
-        "replace",
-        "altacast.rc YP Settings group box",
-    )
+    # YP Settings page: all nine rows (Stream Name ... Charset) get the same 19-unit
+    # pitch. "DJ Name" and "Charset" are appended below IRC, one per row. The page is
+    # only 211 units high, so the stock 20/21 unit spacing is tightened a little.
+    rows = [
+        ("IDC_STREAMNAME", "Stream Name"),
+        ("IDC_STREAMDESC", "Stream Description"),
+        ("IDC_STREAMURL", "Stream URL"),
+        ("IDC_STREAMGENRE", "Stream Genre"),
+        ("IDC_ICQ", "ICQ #"),
+        ("IDC_AIM", "AIM"),
+        ("IDC_IRC", "IRC"),
+    ]
+    first_y, pitch = 35, 19
+    for i, (ctrl, label) in enumerate(rows):
+        y = first_y + i * pitch
+        t = sub_once(
+            t,
+            r"(EDITTEXT\s+%s,\d+,)\d+(,\d+,14)" % ctrl,
+            lambda m, y=y: m.group(1) + str(y) + m.group(2),
+            "altacast.rc edit " + ctrl,
+        )
+        t = sub_once(
+            t,
+            r'(RTEXT\s+"%s",IDC_STATIC,\d+,)\d+(,\d+,8)' % re.escape(label),
+            lambda m, y=y: m.group(1) + str(y + 3) + m.group(2),
+            "altacast.rc label " + label,
+        )
+    dj_y = first_y + 7 * pitch          # 168
+    cs_y = first_y + 8 * pitch          # 187
     return edit(
         t,
         r"    EDITTEXT\s+IDC_IRC,[^\n]*\n",
-        '    RTEXT           "DJ Name",IDC_STATIC,43,179,44,8\n'
-        "    EDITTEXT        IDC_LADIODJ,93,176,117,14,ES_AUTOHSCROLL\n"
-        '    RTEXT           "Charset",IDC_STATIC,43,196,44,8\n'
-        "    COMBOBOX        IDC_LADIOCHARSET,93,193,70,60,"
-        "CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP\n",
+        '    RTEXT           "DJ Name",IDC_STATIC,43,%d,44,8\n'
+        "    EDITTEXT        IDC_LADIODJ,93,%d,117,14,ES_AUTOHSCROLL\n"
+        '    RTEXT           "Charset",IDC_STATIC,43,%d,44,8\n'
+        "    COMBOBOX        IDC_LADIOCHARSET,93,%d,70,60,"
+        "CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP\n"
+        % (dj_y + 3, dj_y, cs_y + 3, cs_y + 1),
         "after",
         "altacast.rc IDC_IRC",
     )
