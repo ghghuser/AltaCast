@@ -11,6 +11,9 @@ AltaCast: add Netladio (ねとらじ) support.
     headers are converted to that character set as well, so they match what
     x-ladio-info announces.
 
+Also rewrites the recording file name to "[YYYYMMDD] <Stream Name>_hhmmss" in a
+multibyte-safe way (Shift_JIS characters whose 2nd byte is 0x5C are kept).
+
 Usage:  python ladio_patch.py <path to trunk/AltaCast/src>
 
 The script is idempotent (a file that already contains "Ladio" is skipped) and
@@ -73,13 +76,23 @@ def p_resource_h(t):
 
 # ----------------------------------------------------------------- altacast.rc
 def p_rc(t):
+    # "DJ Name" and "Charset" go below IRC, one per row. The page is only 211 units
+    # high (the tab control ends right below it), so the group box grows by 3 units
+    # and the two new rows are packed tightly.
+    t = edit(
+        t,
+        r'GROUPBOX\s+"YP Settings",IDC_STATIC,7,7,314,197',
+        'GROUPBOX        "YP Settings",IDC_STATIC,7,7,314,200',
+        "replace",
+        "altacast.rc YP Settings group box",
+    )
     return edit(
         t,
         r"    EDITTEXT\s+IDC_IRC,[^\n]*\n",
-        '    RTEXT           "DJ Name",IDC_STATIC,43,182,44,8\n'
-        "    EDITTEXT        IDC_LADIODJ,93,179,117,14,ES_AUTOHSCROLL\n"
-        '    RTEXT           "Charset",IDC_STATIC,216,182,30,8\n'
-        "    COMBOBOX        IDC_LADIOCHARSET,250,180,60,60,"
+        '    RTEXT           "DJ Name",IDC_STATIC,43,179,44,8\n'
+        "    EDITTEXT        IDC_LADIODJ,93,176,117,14,ES_AUTOHSCROLL\n"
+        '    RTEXT           "Charset",IDC_STATIC,43,196,44,8\n'
+        "    COMBOBOX        IDC_LADIOCHARSET,93,193,70,60,"
         "CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP\n",
         "after",
         "altacast.rc IDC_IRC",
@@ -314,8 +327,68 @@ ICE2_BLOCK = '''char	ladioInfo[4096] = "";
 						ladioInfo);'''
 
 
+# Recording file name: "[YYYYMMDD] <Stream Name>_hhmmss"  (multibyte safe)
+FILENAME_BLOCK = r'''/* Recording file name: "[YYYYMMDD] <Stream Name>_hhmmss" */
+	{
+		char_t	rawName[1024] = "";
+
+		snprintf(rawName, sizeof(rawName), "[%04d%02d%02d] %s_%02d%02d%02d",
+				 newtime->tm_year + 1900, newtime->tm_mon + 1, newtime->tm_mday, g->gServName,
+				 newtime->tm_hour, newtime->tm_min, newtime->tm_sec);
+
+		/*
+		 * Remove characters that are not allowed in file names. Only whole
+		 * multibyte characters are looked at, so a Shift_JIS trail byte of 0x5C
+		 * is kept intact.
+		 */
+		memset(outputFile, '\000', sizeof(outputFile));
+		{
+			const unsigned char	*p = (const unsigned char *) rawName;
+			int					o = 0;
+
+			while(*p && o < (int) sizeof(outputFile) - 16) {	/* leave room for the extension */
+#ifdef WIN32
+				if(IsDBCSLeadByte(*p) && p[1]) {
+					outputFile[o++] = (char) *p++;
+					outputFile[o++] = (char) *p++;
+					continue;
+				}
+#endif
+				char	c = (char) *p++;
+
+				if(c == '"') {
+					c = '\'';
+				}
+				else if(strchr("\\/:*?<>|\r\n", c)) {
+					continue;
+				}
+
+				outputFile[o++] = c;
+			}
+		}
+	}
+	memset(outFilename, '\000', sizeof(outFilename));
+	strcpy(outFilename, outputFile);'''
+
+
 # --------------------------------------------------------------- libaltacast.cpp
 def p_lib_cpp(t):
+    # recording file name: replaces the sprintf (original or an earlier PowerShell patch)
+    # and the whole ReplaceString() chain, inside openArchiveFile() only
+    marker = "int openArchiveFile(altacastGlobals *g) {"
+    pos = t.find(marker)
+    if pos < 0:
+        fail("libaltacast.cpp: openArchiveFile() not found")
+    head, tail = t[:pos], t[pos:]
+    tail = edit(
+        tail,
+        r"sprintf\(\s*outFilename\s*,[^;]*;.*?strcpy\(outputFile, outFilename\);",
+        FILENAME_BLOCK,
+        "replace",
+        "libaltacast.cpp openArchiveFile",
+        re.S,
+    )
+    t = head + tail
     # helpers, right before connectToServer()
     t = edit(
         t,
