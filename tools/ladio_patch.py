@@ -79,7 +79,7 @@ def p_rc(t):
         '    RTEXT           "DJ Name",IDC_STATIC,43,182,44,8\n'
         "    EDITTEXT        IDC_LADIODJ,93,179,117,14,ES_AUTOHSCROLL\n"
         '    RTEXT           "Charset",IDC_STATIC,216,182,30,8\n'
-        "    COMBOBOX        IDC_LADIOCHARSET,250,179,60,60,"
+        "    COMBOBOX        IDC_LADIOCHARSET,250,180,60,60,"
         "CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP\n",
         "after",
         "altacast.rc IDC_IRC",
