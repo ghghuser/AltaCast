@@ -46,4 +46,53 @@ jobs:
           Select-String -Path $proj -Pattern 'SafeExceptionHandlers' | Select-Object -First 10 | ForEach-Object { $_.Line }
 
           # 5. 録音ファイル名を「[YYYYMMDD] タイトル_hhmmss」にする
-          $pat =
+          $pat = 'sprintf\s*\(\s*outFilename\s*,\s*"%s_%s"\s*,\s*g->gServDesc\s*,\s*asctime\s*\(\s*newtime\s*\)\s*\)\s*;'
+          $rep = 'sprintf(outFilename, "[%04d%02d%02d] %s_%02d%02d%02d", newtime->tm_year + 1900, newtime->tm_mon + 1, newtime->tm_mday, g->gServName, newtime->tm_hour, newtime->tm_min, newtime->tm_sec);'
+          $targets = Get-ChildItem -File -Recurse -Path . | Where-Object { $_.Extension -in '.cpp','.c' } | Where-Object { Select-String -Path $_.FullName -Pattern 'outFilename' -Quiet }
+          foreach ($f in $targets) { Edit-File $f.FullName $pat $rep }
+          Write-Host '--- outFilename lines after patch ---'
+          foreach ($f in $targets) { Select-String -Path $f.FullName -Pattern 'outFilename' | ForEach-Object { $_.ToString() } }
+
+      - name: Japanese UI patch (fonts and charset)
+        working-directory: trunk/AltaCast/src
+        shell: pwsh
+        run: |
+          $latin1 = [Text.Encoding]::GetEncoding(28591)
+          $path = (Resolve-Path altacast.rc).Path
+          $bytes = [IO.File]::ReadAllBytes($path)
+          $utf16 = ($bytes.Length -ge 2) -and ($bytes[0] -eq 0xFF) -and ($bytes[1] -eq 0xFE)
+          $enc = if ($utf16) { [Text.Encoding]::Unicode } else { $latin1 }
+          $text = $enc.GetString($bytes)
+          $text = $text.Replace('"MS Sans Serif"', '"Meiryo"')
+          $text = [regex]::Replace($text, '(FONT\s+\d+\s*,\s*"[^"]*"\s*,\s*\d+\s*,\s*\d+\s*,\s*)0x1\b', '${1}0x80')
+          [IO.File]::WriteAllBytes($path, $enc.GetBytes($text))
+          Select-String -Path altacast.rc -Pattern '^\s*FONT\s' | Select-Object -First 20 | ForEach-Object { $_.Line }
+
+      - name: Build (Win32 Release)
+        working-directory: trunk/AltaCast/src
+        env:
+          CL: /DHAVE_STRUCT_TIMESPEC
+          LINK: /SAFESEH:NO
+        run: >
+          msbuild altacastStandalone.vcxproj
+          /p:Configuration=Release
+          /p:Platform=Win32
+          /p:PlatformToolset=v143
+          /p:WindowsTargetPlatformVersion=10.0
+          /m /v:minimal
+
+      - name: Bundle exe and DLLs
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $exe = Get-ChildItem trunk/AltaCast/src -Recurse -Filter altacastStandalone.exe | Select-Object -First 1
+          if (-not $exe) { throw 'altacastStandalone.exe not found' }
+          Copy-Item $exe.FullName dist/
+          Get-ChildItem trunk/external/lib/*.dll | Where-Object { $_.BaseName -notmatch '_d$' } | Copy-Item -Destination dist/
+          Get-ChildItem dist | Select-Object Name, Length
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: altacast-standalone-bundle
+          path: dist/
+          if-no-files-found: error
