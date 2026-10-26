@@ -38,50 +38,12 @@ jobs:
           foreach ($f in Get-ChildItem -File -Include *.cpp -Path .\*) {
             Edit-File $f.FullName '"(__DATE__|__TIME__)' '" ${1}'
           }
+
           # 2. SAFESEH を無効化（プロジェクト側の指定を直接書き換える）
           $proj = (Resolve-Path altacastStandalone.vcxproj).Path
           Edit-File $proj '\s*<ImageHasSafeExceptionHandlers>[^<]*</ImageHasSafeExceptionHandlers>' ''
           Edit-File $proj '<Link>' '<Link><ImageHasSafeExceptionHandlers>false</ImageHasSafeExceptionHandlers>'
           Select-String -Path $proj -Pattern 'SafeExceptionHandlers' | Select-Object -First 10 | ForEach-Object { $_.Line }
 
-      - name: Japanese UI patch (fonts and charset)
-        working-directory: trunk/AltaCast/src
-        shell: pwsh
-        run: |
-          $latin1 = [Text.Encoding]::GetEncoding(28591)
-          $path = (Resolve-Path altacast.rc).Path
-          $bytes = [IO.File]::ReadAllBytes($path)
-          $utf16 = ($bytes.Length -ge 2) -and ($bytes[0] -eq 0xFF) -and ($bytes[1] -eq 0xFE)
-          $enc = if ($utf16) { [Text.Encoding]::Unicode } else { $latin1 }
-          $text = $enc.GetString($bytes)
-          $text = $text.Replace('"MS Sans Serif"', '"Meiryo"')
-          $text = [regex]::Replace($text, '(FONT\s+\d+\s*,\s*"[^"]*"\s*,\s*\d+\s*,\s*\d+\s*,\s*)0x1\b', '${1}0x80')
-          [IO.File]::WriteAllBytes($path, $enc.GetBytes($text))
-          Select-String -Path altacast.rc -Pattern '^\s*FONT\s' | Select-Object -First 20 | ForEach-Object { $_.Line }
-
-      - name: Build (Win32 Release)
-        working-directory: trunk/AltaCast/src
-        env:
-          CL: /DHAVE_STRUCT_TIMESPEC
-          LINK: /SAFESEH:NO
-        run: >
-          msbuild altacastStandalone.vcxproj
-          /p:Configuration=Release
-          /p:Platform=Win32
-          /p:PlatformToolset=v143
-          /p:WindowsTargetPlatformVersion=10.0
-          /m /v:minimal
-
-      - name: List outputs
-        if: always()
-        working-directory: trunk/AltaCast/src
-        run: Get-ChildItem -Recurse -Include *.exe,*.dll Release,bin -ErrorAction SilentlyContinue | Select-Object FullName
-
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: altacast-standalone
-          path: |
-            trunk/AltaCast/src/Release/*.exe
-            trunk/AltaCast/src/bin/**/*.exe
-          if-no-files-found: warn
+          # 5. 録音ファイル名を「[YYYYMMDD] タイトル_hhmmss」にする
+          $pat =
