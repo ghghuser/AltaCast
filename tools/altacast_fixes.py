@@ -26,6 +26,12 @@ AltaCast stability fixes, applied at build time.
                    16 bit / 44.1 kHz stereo input AltaCast uses). Same idea as ShuiCast's
                    ThreeHourBug option. Standalone build only. Set
                    ENABLE_LONG_RUN_RESTART = False to leave it out.
+  5. AAC         - * AAC Quality 0 / empty (what the field holds after switching the
+     settings       encoder type to AAC) gave a very distorted 24 kbps stream. It is now
+                    100 in the dialog and, as a safety net, in the encoder.
+                  * "Use bitrate" (Ogg Vorbis only) stayed ticked after switching to AAC
+                    and then disabled Quality and enabled the unused Bitrate field. For
+                    AAC only Quality is editable now.
 
 Usage:  python altacast_fixes.py <path to trunk/AltaCast/src>
 
@@ -261,6 +267,59 @@ for _name, _blk in (("REC_BLOCK", REC_BLOCK), ("PW_BLOCK", PW_BLOCK), ("SONG_BLO
     if not _blk.isascii():
         fail("internal: inserted C++ (%s) must be ASCII" % _name)
 
-patch_file("libaltacast/libaltacast.cpp", lambda t: fix_password(fix_fflush(t)))
+# ----------------------------------------------------------- 5. AAC settings
+MARK_AAC = "altacast_fixes: aac"
+
+AAC_UI_BLOCK = """if (m_EncoderType == "AAC") {
+\t\t/* %(m)s: faac is quality based. The bitrate and "Use bitrate" (Ogg only)
+\t\t * are ignored, so only Quality is editable, and an empty/0 Quality
+\t\t * (what the field holds after switching from another type) becomes 100. */
+\t\tm_BitrateCtrl.EnableWindow(FALSE);
+\t\tm_QualityCtrl.EnableWindow(TRUE);
+\t\tif (m_QualityCtrl.GetSafeHwnd()) {
+\t\t\tCString	aacQuality;
+
+\t\t\tm_QualityCtrl.GetWindowText(aacQuality);
+\t\t\tif (atoi(LPCSTR(aacQuality)) <= 0) {
+\t\t\t\tm_QualityCtrl.SetWindowText(_T("100"));
+\t\t\t\tm_Quality = _T("100");
+\t\t\t}
+\t\t}
+""" % {"m": MARK_AAC}
+
+
+def fix_aac_ui(t):
+    if MARK_AAC in t:
+        print("altacast_fixes: AAC settings (UI) already patched, skipped")
+        return t
+    t = sub_once(
+        t,
+        r'if \(m_EncoderType == "AAC"\) \{\n'
+        r"\s*if \(m_UseBitrate\) \{\n\s*m_BitrateCtrl\.EnableWindow\(TRUE\);\n\s*m_QualityCtrl\.EnableWindow\(FALSE\);\n\s*\}\n"
+        r"\s*else \{\n\s*m_QualityCtrl\.EnableWindow\(TRUE\);\n\s*m_BitrateCtrl\.EnableWindow\(FALSE\);\n\s*\}\n",
+        lambda m: AAC_UI_BLOCK,
+        "BasicSettings.cpp AAC branch of UpdateFields",
+    )
+    print("altacast_fixes: AAC settings (UI) fixed: Quality only, empty/0 -> 100")
+    return t
+
+
+def fix_aac_quality(t):
+    if MARK_AAC in t:
+        print("altacast_fixes: AAC quality default already patched, skipped")
+        return t
+    t = sub_once(
+        t,
+        r"([ \t]*)m_pConfig->quantqual = atoi\(g->gAACQuality\);\n",
+        lambda m: m.group(1) + "m_pConfig->quantqual = (atoi(g->gAACQuality) > 0) ? atoi(g->gAACQuality) : 100;\t/* "
+        + MARK_AAC + ": 0/empty -> 100 */\n",
+        "libaltacast.cpp quantqual",
+    )
+    print("altacast_fixes: AAC quality 0/empty -> 100 in the encoder")
+    return t
+
+
+patch_file("libaltacast/libaltacast.cpp", lambda t: fix_aac_quality(fix_password(fix_fflush(t))))
 patch_file("MainWindow.cpp", fix_recording)
+patch_file("BasicSettings.cpp", fix_aac_ui)
 print("altacast_fixes: done")
