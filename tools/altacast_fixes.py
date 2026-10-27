@@ -36,6 +36,10 @@ AltaCast stability fixes, applied at build time.
                     500 kbps). The AAC value no longer carries over to Ogg, and the initial
                     Ogg quality is 3 (oggenc's default, about 112 kbps) instead of 0.
                     Change OGG_DEFAULT_QUALITY in this script to use another value.
+  6. quality     - The dialog has ONE Quality field for AAC (10..500) and for Ogg Vorbis /
+     memory        MP3 / FLAC (0..10). Both values are remembered per encoder type: switching
+                   the type restores that type's own value (AAC 100, Ogg 3 at the start),
+                   and OK saves both.
 
 Usage:  python altacast_fixes.py <path to trunk/AltaCast/src>
 
@@ -372,8 +376,135 @@ def fix_ogg_default(t):
     return t
 
 
+# ----------------------------------------- 6. Quality remembered per encoder type
+# The dialog has ONE Quality field for AAC (10..500) and for Ogg Vorbis / MP3 / FLAC (the
+# 0..10 "OggQuality"). Both values are kept in the dialog, switched together with the
+# encoder type, and both are saved with OK.
+MARK_QMEM = "altacast_fixes: qmem"
+
+QMEM_VALID_AAC = "atoi(LPCSTR(%s)) > 0"
+QMEM_VALID_OGG = "!%(s)s.IsEmpty() && atof(LPCSTR(%(s)s)) >= 0 && atof(LPCSTR(%(s)s)) <= 10"
+
+
+def fix_qmem_header(t):
+    if MARK_QMEM in t:
+        print("altacast_fixes: quality memory (header) already patched, skipped")
+        return t
+    return sub_once(
+        t,
+        r"([ \t]*CString[ \t]+m_Quality;\n)",
+        lambda m: m.group(1)
+        + "\tCString\tm_QualityAAC;\t// " + MARK_QMEM + ": Quality of the AAC type\n"
+        + "\tCString\tm_QualityOgg;\t// Quality of Ogg Vorbis / MP3 / FLAC (0..10)\n",
+        "BasicSettings.h m_Quality",
+    )
+
+
+QMEM_LOAD = (
+    "    /* " + MARK_QMEM + ": both Quality values are known to the dialog */\n"
+    "    basicSettings->m_QualityAAC = g->gAACQuality;\n"
+    "    basicSettings->m_QualityOgg = g->gOggQuality;\n"
+)
+
+QMEM_SAVE = """    /* %(m)s: also store the Quality of the type that is not selected */
+    if (g->gAACFlag) {
+        if (%(ogg)s) {
+            strcpy(g->gOggQuality, LPCSTR(basicSettings->m_QualityOgg));
+        }
+    }
+    if (g->gLAMEFlag || g->gOggFlag || g->gFLACFlag) {
+        if (%(aac)s) {
+            strcpy(g->gAACQuality, LPCSTR(basicSettings->m_QualityAAC));
+        }
+    }
+""" % {"m": MARK_QMEM,
+       "ogg": QMEM_VALID_OGG % {"s": "basicSettings->m_QualityOgg"},
+       "aac": QMEM_VALID_AAC % "basicSettings->m_QualityAAC"}
+
+
+def fix_qmem_config(t):
+    if MARK_QMEM in t:
+        print("altacast_fixes: quality memory (Config.cpp) already patched, skipped")
+        return t
+    t = sub_once(
+        t,
+        r'([ \t]*currentEnc = g->encoderNumber;\n)(?=\s*sprintf\(buf, "%d", getCurrentBitrate\(g\)\);)',
+        lambda m: m.group(1) + QMEM_LOAD,
+        "Config.cpp currentEnc",
+    )
+    t = sub_once(
+        t,
+        r"([ \t]*if \(g->gOggFlag\) \{\n\s*strcpy\(g->gOggQuality, LPCSTR\(basicSettings->m_Quality\)\);\n\s*\}\n)",
+        lambda m: m.group(1) + QMEM_SAVE,
+        "Config.cpp gOggQuality save",
+    )
+    return t
+
+
+QMEM_DIALOG = """m_QualityCtrl.EnableWindow(TRUE);
+\t/* %(m)s: remember the Quality per encoder type. AAC has its own value,
+\t * Ogg Vorbis / MP3 / FLAC share the Ogg one (0..10). */
+\t{
+\t\tCString\tleavingQuality;
+
+\t\tm_QualityCtrl.GetWindowText(leavingQuality);
+\t\tif (m_EncoderType == "AAC") {
+\t\t\tm_QualityAAC = leavingQuality;
+\t\t}
+\t\telse if (m_EncoderType == "OggVorbis" || m_EncoderType == "MP3 Lame" || m_EncoderType == "Ogg FLAC") {
+\t\t\tm_QualityOgg = leavingQuality;
+\t\t}
+\t}
+\tm_EncoderType = selectedString;
+\t{
+\t\tCString\tenteringQuality;
+\t\tbool\tsetQuality = false;
+
+\t\tif (m_EncoderType == "AAC") {
+\t\t\tenteringQuality = (%(aac)s) ? m_QualityAAC : CString(_T("%(aacdef)s"));
+\t\t\tsetQuality = true;
+\t\t}
+\t\telse if (m_EncoderType == "OggVorbis" || m_EncoderType == "MP3 Lame" || m_EncoderType == "Ogg FLAC") {
+\t\t\tenteringQuality = (%(ogg)s) ? m_QualityOgg : CString(_T("%(oggdef)s"));
+\t\t\tsetQuality = true;
+\t\t}
+\t\tif (setQuality && m_QualityCtrl.GetSafeHwnd()) {
+\t\t\tm_QualityCtrl.SetWindowText(enteringQuality);
+\t\t\tm_Quality = enteringQuality;
+\t\t}
+\t}
+\t"""
+
+
+def fix_qmem_dialog(t):
+    if MARK_QMEM in t:
+        print("altacast_fixes: quality memory (dialog) already patched, skipped")
+        return t
+    block = QMEM_DIALOG % {
+        "m": MARK_QMEM,
+        "aac": QMEM_VALID_AAC % "m_QualityAAC",
+        "aacdef": "100",
+        "ogg": QMEM_VALID_OGG % {"s": "m_QualityOgg"},
+        "oggdef": OGG_DEFAULT_QUALITY,
+    }
+    t = sub_once(
+        t,
+        r"m_QualityCtrl\.EnableWindow\(TRUE\);\n\s*m_EncoderType = selectedString;\n\s*",
+        lambda m: block,
+        "BasicSettings.cpp OnSelendokEncoderType",
+    )
+    print("altacast_fixes: Quality remembered per encoder type")
+    return t
+
+
+for _name, _blk in (("QMEM_LOAD", QMEM_LOAD), ("QMEM_SAVE", QMEM_SAVE), ("QMEM_DIALOG", QMEM_DIALOG)):
+    if not _blk.isascii():
+        fail("internal: inserted C++ (%s) must be ASCII" % _name)
+
+patch_file("Config.cpp", fix_qmem_config)
+patch_file("BasicSettings.h", fix_qmem_header)
+patch_file("BasicSettings.cpp", lambda t: fix_qmem_dialog(fix_ogg_ui(fix_aac_ui(t))))
 patch_file("libaltacast/libaltacast.cpp",
            lambda t: fix_ogg_default(fix_aac_quality(fix_password(fix_fflush(t)))))
 patch_file("MainWindow.cpp", fix_recording)
-patch_file("BasicSettings.cpp", lambda t: fix_ogg_ui(fix_aac_ui(t)))
 print("altacast_fixes: done")
