@@ -4,19 +4,28 @@ AltaCast stability fixes, applied at build time.
 
   1. fflush      - the recording archive file is flushed after every write, so a crash
                    or power loss does not lose the last buffered part of the recording.
-  2. password    - URLize() works IN PLACE. Calling it on g->gPassword permanently turned
-                   the password into its URL-encoded form after the first song-title
-                   update (and the encoded form was then used for the next connection).
-                   A copy is encoded instead, so g->gPassword stays intact AND the
-                   request still carries the correctly encoded password.
-                   (The encode buffers are also enlarged: the old 255 byte buffer could
-                   overflow, because every special character grows to 3 bytes.)
+  2. metadata    - updateSongTitle() fixes:
+     / password    * URLize() works IN PLACE. Calling it on g->gPassword permanently
+                     turned the password into its URL-encoded form after the first
+                     song-title update. A copy is encoded instead, so g->gPassword stays
+                     intact AND the request still carries the correctly encoded password.
+                   * The song title had the same problem and, worse, URL-encoding makes
+                     it up to 3 times longer, which could overflow the 1024 byte
+                     buffers for long titles. The title is now encoded from a copy into
+                     a 4096 byte buffer, and the request buffer is 16384 bytes
+                     (same size as ShuiCast uses).
   3. recording   - when the recording device is lost (RDP / Terminal Server session
      recovery      change, USB device unplugged, driver reset) the BASS record channel
                    stops. The device is re-opened, but only every RETRY_INTERVAL_MS and
                    at most MAX_TRIES times in a row. When it gives up a status message is
                    shown once; re-selecting the device (or any successful restart)
                    re-arms the retries. Standalone build only.
+  4. long-run    - the "3 hour bug": after about 4 GB of recorded data (BASS 2.4.1 is
+     restart       bundled) the audio can distort. The recorded bytes are counted and the
+                   recording is restarted shortly before the limit (every ~6h45m with the
+                   16 bit / 44.1 kHz stereo input AltaCast uses). Same idea as ShuiCast's
+                   ThreeHourBug option. Standalone build only. Set
+                   ENABLE_LONG_RUN_RESTART = False to leave it out.
 
 Usage:  python altacast_fixes.py <path to trunk/AltaCast/src>
 
@@ -29,8 +38,10 @@ import sys
 from pathlib import Path
 
 # ---- tuning ---------------------------------------------------------------
-RETRY_INTERVAL_MS = 3000   # wait between two attempts to re-open the device
-MAX_TRIES = 20             # attempts in a row before giving up (20 x 3 s = about 1 minute)
+RETRY_INTERVAL_MS = 3000        # wait between two attempts to re-open the device
+MAX_TRIES = 20                  # attempts in a row before giving up (20 x 3 s = about 1 minute)
+ENABLE_LONG_RUN_RESTART = True  # restart recording before the 4 GB limit ("3 hour bug")
+LONG_RUN_LIMIT_BYTES = "0xFF000000UL"   # same threshold as ShuiCast
 # ---------------------------------------------------------------------------
 
 SRC = Path(sys.argv[1] if len(sys.argv) > 1 else ".")
@@ -80,7 +91,7 @@ def fix_fflush(t):
     return t
 
 
-# ----------------------------------------------------------------- 2. password
+# --------------------------------------------------- 2. password / song title
 PW_BLOCK = """{i}/*
 {i} * altacast_fixes: URLize() works in place. Encode a copy, otherwise g->gPassword
 {i} * itself is overwritten with its URL-encoded form.
@@ -94,10 +105,23 @@ PW_BLOCK = """{i}/*
 {i}}}
 """
 
+SONG_BLOCK = """{i}/*
+{i} * altacast_fixes: same for the song title. Encoding can make it 3 times longer, so
+{i} * work on a 4096 byte copy (the title itself is at most 1023 bytes).
+{i} */
+{i}{{
+{i}	char_t	songCopy[4096] = "";
+
+{i}	strncpy(songCopy, g->gCurrentSong, sizeof(songCopy) - 1);
+{i}	memset(URLSong, '\\000', sizeof(URLSong));
+{i}	URLize(songCopy, URLSong, sizeof(songCopy), sizeof(URLSong));
+{i}}}
+"""
+
 
 def fix_password(t):
     if "altacast_fixes: URLize() works in place" in t:
-        print("altacast_fixes: password fix already present, skipped")
+        print("altacast_fixes: password/song fix already present, skipped")
         return t
     marker = "int updateSongTitle(altacastGlobals *g, int forceURL) {"
     pos = t.find(marker)
@@ -111,16 +135,34 @@ def fix_password(t):
         "libaltacast.cpp URLize(g->gPassword ...)",
     )
     tail = sub_once(
+        tail,
+        r"([ \t]*)URLize\(g->gCurrentSong, URLSong, sizeof\(g->gSongTitle\), sizeof\(URLSong\)\);\n",
+        lambda m: SONG_BLOCK.format(i=m.group(1)),
+        "libaltacast.cpp URLize(g->gCurrentSong ...)",
+    )
+    tail = sub_once(
         tail, r"URLPassword\[255\]", "URLPassword[1024]", "libaltacast.cpp URLPassword size"
     )
     tail = sub_once(
-        tail, r"contentString\[2056\]", "contentString[4096]", "libaltacast.cpp contentString size"
+        tail, r"URLSong\[1024\]", "URLSong[4096]", "libaltacast.cpp URLSong size"
     )
-    print("altacast_fixes: password fix added")
+    tail = sub_once(
+        tail, r"contentString\[2056\]", "contentString[16384]", "libaltacast.cpp contentString size"
+    )
+    print("altacast_fixes: password/song fix added (buffers: request 16384, song 4096)")
     return head + tail
 
 
 # ---------------------------------------------------------------- 3. recording
+LONG_RUN_RESTART_CODE = """
+#ifdef ALTACAST_LONG_RUN_RESTART
+			if(altacastRecRestart) {
+				generalStatusCallback((void *) "Restarting recording (long-run workaround for the 4 GB limit)");
+				stopRecording();
+				startRecording(m_CurrentInputCard);
+			}
+#endif"""
+
 REC_BLOCK = """#ifdef ALTACASTSTANDALONE
 	/*
 	 * altacast_fixes: recording device recovery.
@@ -128,6 +170,7 @@ REC_BLOCK = """#ifdef ALTACASTSTANDALONE
 	 * only every ALTACAST_REC_RETRY_MS and at most ALTACAST_REC_MAX_TRIES times in a
 	 * row, so a device that stays away does not cause a flood of init attempts and
 	 * status messages. The counter is re-armed as soon as recording works again.
+	 * Also restarts the recording before the 4 GB limit (see BASSwaveInputProc).
 	 */
 #define ALTACAST_REC_RETRY_MS	%(retry)d
 #define ALTACAST_REC_MAX_TRIES	%(tries)d
@@ -136,7 +179,7 @@ REC_BLOCK = """#ifdef ALTACASTSTANDALONE
 		static DWORD	recLastTry = 0;
 
 		if(BASS_ChannelIsActive(inRecHandle) != BASS_ACTIVE_STOPPED) {
-			recTries = 0;
+			recTries = 0;%(longrun)s
 		}
 		else if(recTries < ALTACAST_REC_MAX_TRIES &&
 				(recTries == 0 || GetTickCount() - recLastTry >= ALTACAST_REC_RETRY_MS)) {
@@ -154,7 +197,30 @@ REC_BLOCK = """#ifdef ALTACASTSTANDALONE
 #undef ALTACAST_REC_MAX_TRIES
 #endif
 
-""" % {"retry": RETRY_INTERVAL_MS, "tries": MAX_TRIES}
+""" % {
+    "retry": RETRY_INTERVAL_MS,
+    "tries": MAX_TRIES,
+    "longrun": (LONG_RUN_RESTART_CODE if ENABLE_LONG_RUN_RESTART else ""),
+}
+
+COUNTER_DECL = """/*
+ * altacast_fixes: long-run restart. Counts the recorded bytes; the timer restarts the
+ * recording before BASS reaches 4 GB (the "3 hour bug").
+ */
+#define ALTACAST_LONG_RUN_RESTART
+static DWORD			altacastRecBytes = 0;
+static volatile LONG	altacastRecRestart = 0;
+
+"""
+
+COUNTER_CODE = """	altacastRecBytes += length;	/* altacast_fixes: long-run restart */
+	if(altacastRecBytes > %s) {
+		altacastRecRestart = 1;
+	}
+
+""" % LONG_RUN_LIMIT_BYTES
+
+COUNTER_RESET = "\taltacastRecBytes = 0;\t/* altacast_fixes: long-run restart */\n\taltacastRecRestart = 0;\n"
 
 
 def fix_recording(t):
@@ -170,13 +236,30 @@ def fix_recording(t):
         lambda m: m.group(1) + REC_BLOCK,
         "MainWindow.cpp OnTimer",
     )
+    if ENABLE_LONG_RUN_RESTART:
+        t = sub_once(
+            t,
+            r"(BOOL CALLBACK BASSwaveInputProc\(HRECORD handle, const void \*buffer, DWORD length, void \*user\) \{\n)",
+            lambda m: COUNTER_DECL + m.group(1) + COUNTER_CODE,
+            "MainWindow.cpp BASSwaveInputProc",
+        )
+        t = sub_once(
+            t,
+            r"([ \t]*inRecHandle = BASS_RecordStart\(44100, 2, 0, &BASSwaveInputProc, NULL\);\n)",
+            lambda m: m.group(1) + COUNTER_RESET,
+            "MainWindow.cpp BASS_RecordStart",
+        )
     print("altacast_fixes: recording recovery added (retry every %d ms, max %d tries)"
           % (RETRY_INTERVAL_MS, MAX_TRIES))
+    if ENABLE_LONG_RUN_RESTART:
+        print("altacast_fixes: long-run restart added (limit %s bytes)" % LONG_RUN_LIMIT_BYTES)
     return t
 
 
-if not REC_BLOCK.isascii() or not PW_BLOCK.isascii():
-    fail("internal: inserted C++ must be ASCII")
+for _name, _blk in (("REC_BLOCK", REC_BLOCK), ("PW_BLOCK", PW_BLOCK), ("SONG_BLOCK", SONG_BLOCK),
+                    ("COUNTER_DECL", COUNTER_DECL), ("COUNTER_CODE", COUNTER_CODE)):
+    if not _blk.isascii():
+        fail("internal: inserted C++ (%s) must be ASCII" % _name)
 
 patch_file("libaltacast/libaltacast.cpp", lambda t: fix_password(fix_fflush(t)))
 patch_file("MainWindow.cpp", fix_recording)
