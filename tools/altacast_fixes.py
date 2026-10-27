@@ -32,6 +32,10 @@ AltaCast stability fixes, applied at build time.
                   * "Use bitrate" (Ogg Vorbis only) stayed ticked after switching to AAC
                     and then disabled Quality and enabled the unused Bitrate field. For
                     AAC only Quality is editable now.
+                  * Ogg Vorbis Quality is 0..10 (100 would mean maximum quality, about
+                    500 kbps). The AAC value no longer carries over to Ogg, and the initial
+                    Ogg quality is 3 (oggenc's default, about 112 kbps) instead of 0.
+                    Change OGG_DEFAULT_QUALITY in this script to use another value.
 
 Usage:  python altacast_fixes.py <path to trunk/AltaCast/src>
 
@@ -319,7 +323,57 @@ def fix_aac_quality(t):
     return t
 
 
-patch_file("libaltacast/libaltacast.cpp", lambda t: fix_aac_quality(fix_password(fix_fflush(t))))
+# Ogg Vorbis Quality is 0..10 (x0.1 -> libvorbis 0.0..1.0; anything >= 10 is clamped to the
+# maximum, about 500 kbps). The Quality field is shared with AAC (10..500), so the value 100
+# set for AAC must not carry over to Ogg. Ogg default: 3 = what oggenc uses (about 112 kbps).
+OGG_DEFAULT_QUALITY = "3"
+MARK_OGG = "altacast_fixes: ogg"
+
+OGG_UI_BLOCK = """\t\t/* %(m)s: Quality is 0..10 here. An empty value or the AAC value (100)
+\t\t * must not carry over - 10 or more means maximum quality (about 500 kbps). */
+\t\tif (m_QualityCtrl.GetSafeHwnd()) {
+\t\t\tCString	oggQuality;
+
+\t\t\tm_QualityCtrl.GetWindowText(oggQuality);
+\t\t\tif (oggQuality.IsEmpty() || atof(LPCSTR(oggQuality)) < 0 || atof(LPCSTR(oggQuality)) > 10) {
+\t\t\t\tm_QualityCtrl.SetWindowText(_T("%(q)s"));
+\t\t\t\tm_Quality = _T("%(q)s");
+\t\t\t}
+\t\t}
+""" % {"m": MARK_OGG, "q": OGG_DEFAULT_QUALITY}
+
+
+def fix_ogg_ui(t):
+    if MARK_OGG in t:
+        print("altacast_fixes: Ogg quality (UI) already patched, skipped")
+        return t
+    t = sub_once(
+        t,
+        r'(if \(m_EncoderType == "OggVorbis"\) \{\n\s*m_UseBitrateCtrl\.EnableWindow\(TRUE\);\n)',
+        lambda m: m.group(1) + OGG_UI_BLOCK,
+        "BasicSettings.cpp OggVorbis branch of UpdateFields",
+    )
+    print("altacast_fixes: Ogg quality kept within 0..10 (fallback %s)" % OGG_DEFAULT_QUALITY)
+    return t
+
+
+def fix_ogg_default(t):
+    """Initial Ogg quality (no config file yet): 0 (about 64 kbps) -> OGG_DEFAULT_QUALITY."""
+    if re.search(r'"OggQuality", "%s"' % re.escape(OGG_DEFAULT_QUALITY), t):
+        print("altacast_fixes: Ogg default quality already %s, skipped" % OGG_DEFAULT_QUALITY)
+        return t
+    t = sub_once(
+        t,
+        r'("OggQuality", )"0"',
+        lambda m: m.group(1) + '"%s"' % OGG_DEFAULT_QUALITY,
+        "libaltacast.cpp OggQuality default",
+    )
+    print("altacast_fixes: Ogg default quality 0 -> %s" % OGG_DEFAULT_QUALITY)
+    return t
+
+
+patch_file("libaltacast/libaltacast.cpp",
+           lambda t: fix_ogg_default(fix_aac_quality(fix_password(fix_fflush(t)))))
 patch_file("MainWindow.cpp", fix_recording)
-patch_file("BasicSettings.cpp", fix_aac_ui)
+patch_file("BasicSettings.cpp", lambda t: fix_ogg_ui(fix_aac_ui(t)))
 print("altacast_fixes: done")
