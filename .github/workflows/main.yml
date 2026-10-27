@@ -9,12 +9,15 @@ jobs:
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
-
+      
       - uses: microsoft/setup-msbuild@v2
       
       - name: Apply Netladio patch (DJ name / charset)
         run: python tools/ladio_patch.py trunk/AltaCast/src
-
+        
+      - name: Apply stability fixes (fflush, password, recording recovery)
+        run: python tools/altacast_fixes.py trunk/AltaCast/src
+        
       - name: Patch sources for modern toolchain
         working-directory: trunk/AltaCast/src
         shell: pwsh
