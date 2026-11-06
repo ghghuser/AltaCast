@@ -17,6 +17,9 @@ jobs:
         
       - name: Apply stability fixes (fflush, password, recording recovery)
         run: python tools/altacast_fixes.py trunk/AltaCast/src
+
+      - name: Apply fixes 2 (encoder lock, multi-instance warning, AAC Plus, FLAC extension)
+        run: python tools/altacast_fixes2.py trunk/AltaCast/src
         
       - name: Patch sources for modern toolchain
         working-directory: trunk/AltaCast/src
